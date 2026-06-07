@@ -830,16 +830,9 @@ function App() {
       setIsSyncing(false);
       return;
     }
-    const done = () => {
-      if (completed) return;
-      completed = true;
-      setIsSyncing(false);
-      window.removeEventListener("message", handleMessage);
-      if (popup && !popup.closed) popup.close();
-    };
-    const handleMessage = event => {
+    const processData = dataStr => {
       try {
-        const data = JSON.parse(event.data);
+        const data = JSON.parse(dataStr);
         if (data && data.status === "success" && data.payload) {
           const parsed = JSON.parse(data.payload);
           if (parsed.cards) setCards(parsed.cards);
@@ -847,22 +840,47 @@ function App() {
           if (parsed.mastered) setMastered(parsed.mastered);
           setSyncStatus("✅ 成功從雲端同步最新數據！");
           alert("同步成功！已成功加載雲端對話資料庫。");
+          return true;
         } else {
           setSyncStatus("⚠️ 雲端目前尚無儲存的紀錄（或是無此 App ID 資料）。");
+          return true;
         }
       } catch (err) {
-        console.error("GAS popup message error:", err);
-        setSyncStatus("❌ 拉取資料失敗。");
-      } finally {
-        done();
+        console.error("GAS data parse error:", err);
+        return false;
       }
     };
+    const done = () => {
+      if (completed) return;
+      completed = true;
+      setIsSyncing(false);
+      window.removeEventListener("message", handleMessage);
+      if (pollInterval) clearInterval(pollInterval);
+      if (popup && !popup.closed) popup.close();
+    };
+    const handleMessage = event => {
+      if (processData(event.data)) done();
+    };
+    let pollInterval = setInterval(() => {
+      try {
+        if (popup && popup.closed) {
+          done();
+          return;
+        }
+        const nameData = popup.name;
+        if (nameData && nameData !== "undefined" && nameData.startsWith("{")) {
+          if (processData(nameData)) done();
+        }
+      } catch (e) {
+        // cross-origin access to popup.name may throw in some browsers
+      }
+    }, 500);
     window.addEventListener("message", handleMessage);
     setTimeout(() => {
       if (completed) return;
       setSyncStatus("❌ 拉取逾時，請確認 GAS 網址正確後重試。");
       done();
-    }, 60000);
+    }, 90000);
   };
   const resetToDefault = () => {
     if (window.confirm("確定要重設回預設的美式對話卡資料嗎？這將會覆寫您的自訂更動。")) {
