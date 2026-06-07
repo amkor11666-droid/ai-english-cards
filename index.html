@@ -386,7 +386,7 @@ const DEFAULT_CARDS = [{
 
 // Unique App ID for backend database isolation
 const appId = typeof __app_id !== 'undefined' ? __app_id : 'american-slang-cards-v1';
-const apiKey = ""; // Groq API Key will be handled dynamically or fall back to standard.
+const apiKey = ""; // Gemini API Key will be handled dynamically or fall back to standard.
 
 function App() {
   // Cards & Queue State
@@ -411,7 +411,7 @@ function App() {
   const [isSyncing, setIsSyncing] = useState(false);
   const [syncStatus, setSyncStatus] = useState("");
 
-  // Groq API Config (User can insert their own custom key in Settings if desired)
+  // Gemini API Config (User can insert their own custom key in Settings if desired)
   const [customApiKey, setCustomApiKey] = useState(() => localStorage.getItem('dialogue_custom_api_key') || "");
 
   // AI Panel State
@@ -428,11 +428,6 @@ function App() {
   const [heardText, setHeardText] = useState("");
   const [voiceMessage, setVoiceMessage] = useState("");
   const recognitionRef = useRef(null);
-  const isListeningRef = useRef(false);
-  const speakCardTextRef = useRef(null);
-  const handleNextCardRef = useRef(null);
-  const flipCardRef = useRef(null);
-  const voiceAskAiRef = useRef(null);
 
   // Audio Synthesis
   const [isSpeaking, setIsSpeaking] = useState(false);
@@ -511,7 +506,6 @@ function App() {
     utterance.onerror = () => setIsSpeaking(false);
     window.speechSynthesis.speak(utterance);
   };
-  speakCardTextRef.current = speakCardText;
 
   // Go to Next Card
   const handleNextCard = () => {
@@ -526,7 +520,6 @@ function App() {
       setCurrentIndex(nextIdx);
     }, 150);
   };
-  handleNextCardRef.current = handleNextCard;
 
   // Toggle flip state
   const toggleFlip = () => {
@@ -581,9 +574,6 @@ function App() {
   };
 
   // Voice Speech Recognition Setup (Web Speech API)
-  isListeningRef.current = isListening;
-  flipCardRef.current = () => setIsFlipped(p => !p);
-
   useEffect(() => {
     const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
     if (!SpeechRecognition) {
@@ -593,9 +583,10 @@ function App() {
     const rec = new SpeechRecognition();
     rec.continuous = true;
     rec.interimResults = false;
-    rec.lang = 'zh-TW';
+    rec.lang = 'zh-TW'; // Can accept Mixed ZH-TW & EN
 
     rec.onstart = () => {
+      setIsListening(true);
       setVoiceMessage("語音助理正在聆聽... 請嘗試說「翻面」或「下一題」或「播放」");
     };
     rec.onresult = event => {
@@ -603,50 +594,63 @@ function App() {
       const speechResult = event.results[resultIndex][0].transcript.toLowerCase().trim();
       setHeardText(speechResult);
 
-      if (speechResult.includes("翻面") || speechResult.includes("方面") || speechResult.includes("反面") || speechResult.includes("翻頁") || speechResult.includes("翻牌") || speechResult.includes("flip") || speechResult.includes("card")) {
+      // Command Checking logic
+      if (speechResult.includes("翻面") || speechResult.includes("翻頁") || speechResult.includes("翻牌") || speechResult.includes("flip") || speechResult.includes("card")) {
         setVoiceMessage(`偵測到翻牌指令：「${speechResult}」`);
-        flipCardRef.current();
+        setIsFlipped(prev => !prev);
       } else if (speechResult.includes("下一") || speechResult.includes("next") || speechResult.includes("跳過") || speechResult.includes("skip")) {
         setVoiceMessage(`偵測到下一題指令：「${speechResult}」`);
-        handleNextCardRef.current();
+        handleNextCard();
       } else if (speechResult.includes("播放") || speechResult.includes("唸一") || speechResult.includes("play") || speechResult.includes("speak") || speechResult.includes("朗讀")) {
         setVoiceMessage(`偵測到播放英文指令：「${speechResult}」`);
-        speakCardTextRef.current();
+        speakCardText();
       } else {
-        setVoiceMessage(`正在詢問 AI：「${speechResult}」`);
-        voiceAskAiRef.current(speechResult);
+        setVoiceMessage(`聽到：「${speechResult}」（未辨識到指令）`);
       }
     };
     rec.onerror = err => {
       console.error("Speech Error:", err);
       if (err.error === 'no-speech') {
+        // ignore or reset message
       } else {
         setVoiceMessage("語音中斷或遭遇錯誤: " + err.error);
       }
     };
     rec.onend = () => {
-      if (isListeningRef.current) {
-        try { rec.start(); } catch (e) { console.log("Auto-restart issue", e); }
+      // Auto-restart if user still wants it active
+      if (isListening) {
+        try {
+          rec.start();
+        } catch (e) {
+          console.log("Auto-restart voice listener issue", e);
+        }
       }
     };
     recognitionRef.current = rec;
     return () => {
-      try { rec.abort(); } catch(e) {}
+      if (recognitionRef.current) {
+        recognitionRef.current.abort();
+      }
     };
-  }, []);
+  }, [isListening, currentIndex, filteredCards]);
 
   // Toggle Voice Listening State
   const toggleVoiceListening = () => {
-    const rec = recognitionRef.current;
-    if (!rec) return;
     if (isListening) {
       setIsListening(false);
-      try { rec.stop(); } catch(e) {}
+      if (recognitionRef.current) {
+        recognitionRef.current.stop();
+      }
       setVoiceMessage("語音控制已關閉。");
     } else {
-      setIsListening(true);
       setVoiceMessage("正在喚起麥克風權限...");
-      try { rec.start(); } catch (e) { console.error(e); }
+      if (recognitionRef.current) {
+        try {
+          recognitionRef.current.start();
+        } catch (e) {
+          console.error(e);
+        }
+      }
     }
   };
 
@@ -668,38 +672,42 @@ function App() {
     }
   };
 
-  // Call Groq API (OpenAI-compatible)
-  const askGroq = async promptText => {
+  // Call Gemini API (using gemini-2.5-flash-preview-09-2025)
+  const askGemini = async promptText => {
     const activeKey = customApiKey || apiKey;
+    // Note: The rule says const apiKey = "" (empty). So if user didn't enter custom Key, they might get free sandbox execution or error if no key exists. 
+    // We allow custom key input in settings UI for maximum versatility!
 
-    const apiEndpoint = 'https://api.groq.com/openai/v1/chat/completions';
+    const apiEndpoint = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${activeKey}`;
     const systemPrompt = "你是一位熱情活潑的美國英語口語專家教練，目標是幫忙學生解決口語、連音、俚語情境以及片語理解問題。請以繁體中文回答，口吻鼓勵且專業。";
     const requestBody = {
-      model: "llama-3.3-70b-versatile",
-      messages: [
-        { role: "system", content: systemPrompt },
-        { role: "user", content: promptText }
-      ],
-      temperature: 0.7,
-      max_tokens: 2048
+      contents: [{
+        parts: [{
+          text: promptText
+        }]
+      }],
+      systemInstruction: {
+        parts: [{
+          text: systemPrompt
+        }]
+      }
     };
     try {
       const result = await fetchWithBackoff(apiEndpoint, {
         method: 'POST',
         headers: {
-          'Authorization': `Bearer ${activeKey}`,
           'Content-Type': 'application/json'
         },
         body: JSON.stringify(requestBody)
       });
-      const answerText = result.choices?.[0]?.message?.content;
+      const answerText = result.candidates?.[0]?.content?.parts?.[0]?.text;
       if (!answerText) {
         throw new Error("無效的 AI 回覆結構。");
       }
       return answerText;
     } catch (err) {
-      console.error("Groq Error:", err);
-      throw new Error("Groq AI 連線失敗，請檢查網際網路，或至設定面板貼上有效的 API 金鑰。");
+      console.error("Gemini Error:", err);
+      throw new Error("Gemini AI 連線失敗，請檢查網際網路，或至設定面板貼上有效的 API 金鑰。");
     }
   };
 
@@ -715,7 +723,7 @@ function App() {
     }]);
     setIsAiLoading(true);
     try {
-      const answer = await askGroq(textToSend);
+      const answer = await askGemini(textToSend);
       setAiChat(prev => [...prev, {
         role: 'model',
         text: answer
@@ -729,20 +737,6 @@ function App() {
       setIsAiLoading(false);
     }
   };
-  const voiceAskAi = async text => {
-    if (!text.trim()) return;
-    setAiChat(prev => [...prev, { role: 'user', text }]);
-    setIsAiLoading(true);
-    try {
-      const answer = await askGroq(text);
-      setAiChat(prev => [...prev, { role: 'model', text: answer }]);
-    } catch (error) {
-      setAiChat(prev => [...prev, { role: 'model', text: `❌ 錯誤: ${error.message}` }]);
-    } finally {
-      setIsAiLoading(false);
-    }
-  };
-  voiceAskAiRef.current = voiceAskAi;
 
   // Quick Ask AI "Explain current card"
   const handleAnalyzeCurrentCardWithAi = async () => {
@@ -764,7 +758,7 @@ function App() {
                 
                 請使用易讀的格式、粗體標記，並以繁體中文回答。`;
     try {
-      const answer = await askGroq(explanationPrompt);
+      const answer = await askGemini(explanationPrompt);
       setAiChat(prev => [...prev, {
         role: 'model',
         text: answer
@@ -819,36 +813,56 @@ function App() {
       setIsSyncing(false);
     }
   };
-  const handlePullFromGas = async () => {
+  const handlePullFromGas = () => {
     if (!gasUrl) {
       alert("請先在設定面板中填寫您的 Google Apps Script (GAS) Web App 網址！");
       setShowSettings(true);
       return;
     }
+    let completed = false;
     setIsSyncing(true);
-    setSyncStatus("正在自雲端拉取最新對話卡...");
-    try {
-      // We must use JSONP or handle properly. Let's make an fetch call with GET
-      const url = `${gasUrl}?action=getData&appId=${appId}`;
-      const res = await fetch(url);
-      const data = await res.json();
-      if (data && data.status === "success" && data.payload) {
-        const parsed = JSON.parse(data.payload);
-        if (parsed.cards) setCards(parsed.cards);
-        if (parsed.favorites) setFavorites(parsed.favorites);
-        if (parsed.mastered) setMastered(parsed.mastered);
-        setSyncStatus("✅ 成功從雲端同步最新數據！");
-        alert("同步成功！已成功加載雲端對話資料庫。");
-      } else {
-        setSyncStatus("⚠️ 雲端目前尚無儲存的紀錄（或是無此 App ID 資料）。");
-      }
-    } catch (error) {
-      console.error("GAS Pull Error:", error);
-      setSyncStatus("❌ 拉取資料失敗。");
-      alert("讀取失敗，請確認您的 GAS 網址，並確保您已在 Google Sheets 後端完成初始部署。");
-    } finally {
+    setSyncStatus("正在透過彈出視窗從雲端拉取資料...");
+    const popupUrl = `${gasUrl}?action=getData&appId=${appId}&mode=popup`;
+    const popup = window.open(popupUrl, "gasPopup", "width=600,height=400");
+    if (!popup) {
+      setSyncStatus("❌ 彈出視窗被阻擋，請允許彈出視窗後重試。");
+      alert("彈出視窗被瀏覽器阻擋，請允許此網站的彈出視窗後再試一次。");
       setIsSyncing(false);
+      return;
     }
+    const done = () => {
+      if (completed) return;
+      completed = true;
+      setIsSyncing(false);
+      window.removeEventListener("message", handleMessage);
+      if (popup && !popup.closed) popup.close();
+    };
+    const handleMessage = event => {
+      try {
+        const data = JSON.parse(event.data);
+        if (data && data.status === "success" && data.payload) {
+          const parsed = JSON.parse(data.payload);
+          if (parsed.cards) setCards(parsed.cards);
+          if (parsed.favorites) setFavorites(parsed.favorites);
+          if (parsed.mastered) setMastered(parsed.mastered);
+          setSyncStatus("✅ 成功從雲端同步最新數據！");
+          alert("同步成功！已成功加載雲端對話資料庫。");
+        } else {
+          setSyncStatus("⚠️ 雲端目前尚無儲存的紀錄（或是無此 App ID 資料）。");
+        }
+      } catch (err) {
+        console.error("GAS popup message error:", err);
+        setSyncStatus("❌ 拉取資料失敗。");
+      } finally {
+        done();
+      }
+    };
+    window.addEventListener("message", handleMessage);
+    setTimeout(() => {
+      if (completed) return;
+      setSyncStatus("❌ 拉取逾時，請確認 GAS 網址正確後重試。");
+      done();
+    }, 60000);
   };
   const resetToDefault = () => {
     if (window.confirm("確定要重設回預設的美式對話卡資料嗎？這將會覆寫您的自訂更動。")) {
@@ -1115,9 +1129,9 @@ function App() {
     class: "w-4 h-4"
   }))), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("h3", {
     class: "text-xs font-bold text-white flex items-center gap-1.5"
-  }, "Groq AI \u53E3\u8A9E\u52A9\u7406"), /*#__PURE__*/React.createElement("p", {
+  }, "Gemini \u7F8E\u5F0F\u82F1\u6587\u53E3\u8A9E\u52A9\u7406"), /*#__PURE__*/React.createElement("p", {
     class: "text-[9px] text-slate-500"
-  }, "\u642D\u8F09 Groq Llama 3 \u5373\u6642\u8A9E\u610F\u5206\u6790"))), /*#__PURE__*/React.createElement("button", {
+  }, "\u642D\u8F09 2.5-flash \u5373\u6642\u8A9E\u610F\u5206\u6790"))), /*#__PURE__*/React.createElement("button", {
     onClick: () => setAiChat([{
       role: 'model',
       text: "對話紀錄已清除！有任何英語學習的疑問，都可以隨時告訴我。"
@@ -1240,7 +1254,7 @@ function App() {
     class: "space-y-1"
   }, /*#__PURE__*/React.createElement("label", {
     class: "text-xs font-semibold text-slate-400"
-  }, "\u81EA\u8A02 Groq API \u91D1\u9470 (\u9078\u586B)"), /*#__PURE__*/React.createElement("input", {
+  }, "\u81EA\u8A02 Gemini API \u91D1\u9470 (\u9078\u586B)"), /*#__PURE__*/React.createElement("input", {
     type: "password",
     value: customApiKey,
     onChange: e => {
@@ -1251,7 +1265,7 @@ function App() {
     class: "w-full bg-slate-950 border border-slate-800 text-slate-300 rounded-xl px-3.5 py-2 text-xs focus:outline-none focus:ring-1 focus:ring-emerald-500"
   }), /*#__PURE__*/React.createElement("p", {
     class: "text-[9px] text-slate-500"
-  }, "\u60A8\u53EF\u4EE5\u586B\u5165\u60A8\u500B\u4EBA\u7684 Groq API Key\u3002\u82E5\u7121\u586B\u5BEB\u5C06\u7121\u6CD5\u4F7F\u7528 AI \u529F\u80FD\u3002"))), /*#__PURE__*/React.createElement("div", {
+  }, "\u60A8\u53EF\u4EE5\u586B\u5165\u60A8\u500B\u4EBA\u7684 Gemini API Key\u3002\u82E5\u7121\u586B\u5BEB\u5C07\u81EA\u52D5\u63A1\u7528\u7CFB\u7D71\u9810\u8A2D\u91D1\u9470\u3002"))), /*#__PURE__*/React.createElement("div", {
     class: "flex items-center justify-between border-t border-slate-800 pt-4"
   }, /*#__PURE__*/React.createElement("button", {
     onClick: resetToDefault,
