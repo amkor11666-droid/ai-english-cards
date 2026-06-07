@@ -819,69 +819,48 @@ function App() {
       setShowSettings(true);
       return;
     }
-    let completed = false;
     setIsSyncing(true);
-    setSyncStatus("正在透過彈出視窗從雲端拉取資料...");
-    const popupUrl = `${gasUrl}?action=getData&appId=${appId}&mode=popup`;
-    const popup = window.open(popupUrl, "gasPopup", "width=600,height=400");
-    if (!popup) {
-      setSyncStatus("❌ 彈出視窗被阻擋，請允許彈出視窗後重試。");
-      alert("彈出視窗被瀏覽器阻擋，請允許此網站的彈出視窗後再試一次。");
-      setIsSyncing(false);
-      return;
-    }
-    const processData = dataStr => {
+    setSyncStatus("正在開啟彈出視窗進行認證...");
+    const redirectBack = encodeURIComponent(window.location.href.split('#')[0]);
+    const popupUrl = `${gasUrl}?action=getData&appId=${appId}&mode=redirect&redirectBack=${redirectBack}`;
+    sessionStorage.setItem('gasPending', 'true');
+    sessionStorage.setItem('gasCards', JSON.stringify(cards));
+    sessionStorage.setItem('gasFavorites', JSON.stringify(favorites));
+    sessionStorage.setItem('gasMastered', JSON.stringify(mastered));
+    window.location.href = popupUrl;
+  };
+
+  // On mount, check for redirect-back data in URL hash
+  useEffect(() => {
+    const hash = window.location.hash;
+    if (hash && hash.startsWith('#gasData=')) {
       try {
-        const data = JSON.parse(dataStr);
+        const decoded = decodeURIComponent(hash.slice(9));
+        const data = JSON.parse(decoded);
         if (data && data.status === "success" && data.payload) {
           const parsed = JSON.parse(data.payload);
           if (parsed.cards) setCards(parsed.cards);
           if (parsed.favorites) setFavorites(parsed.favorites);
           if (parsed.mastered) setMastered(parsed.mastered);
-          setSyncStatus("✅ 成功從雲端同步最新數據！");
-          alert("同步成功！已成功加載雲端對話資料庫。");
-          return true;
+          alert("✅ 成功從雲端同步最新數據！");
         } else {
-          setSyncStatus("⚠️ 雲端目前尚無儲存的紀錄（或是無此 App ID 資料）。");
-          return true;
+          alert("⚠️ 雲端目前尚無儲存的紀錄。");
         }
       } catch (err) {
-        console.error("GAS data parse error:", err);
-        return false;
+        console.error("Error loading GAS redirect data:", err);
+        alert("❌ 讀取資料失敗，請確認 GAS 網址正確。");
       }
-    };
-    const done = () => {
-      if (completed) return;
-      completed = true;
-      setIsSyncing(false);
-      window.removeEventListener("message", handleMessage);
-      if (pollInterval) clearInterval(pollInterval);
-      if (popup && !popup.closed) popup.close();
-    };
-    const handleMessage = event => {
-      if (processData(event.data)) done();
-    };
-    let pollInterval = setInterval(() => {
+      window.location.hash = '';
+      sessionStorage.removeItem('gasPending');
+    } else if (sessionStorage.getItem('gasPending') === 'true') {
+      sessionStorage.removeItem('gasPending');
       try {
-        if (popup && popup.closed) {
-          done();
-          return;
-        }
-        const nameData = popup.name;
-        if (nameData && nameData !== "undefined" && nameData.startsWith("{")) {
-          if (processData(nameData)) done();
-        }
-      } catch (e) {
-        // cross-origin access to popup.name may throw in some browsers
-      }
-    }, 500);
-    window.addEventListener("message", handleMessage);
-    setTimeout(() => {
-      if (completed) return;
-      setSyncStatus("❌ 拉取逾時，請確認 GAS 網址正確後重試。");
-      done();
-    }, 90000);
-  };
+        const savedCards = sessionStorage.getItem('gasCards');
+        if (savedCards) setCards(JSON.parse(savedCards));
+      } catch (e) {}
+      alert("❌ 讀取失敗或已取消，請確認 GAS 網址正確後重試。");
+    }
+  }, []);
   const resetToDefault = () => {
     if (window.confirm("確定要重設回預設的美式對話卡資料嗎？這將會覆寫您的自訂更動。")) {
       setCards(DEFAULT_CARDS);
